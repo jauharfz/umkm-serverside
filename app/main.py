@@ -57,7 +57,10 @@ Endpoint `/api/public/tenant` dan `/api/public/diskon` adalah endpoint
 # Untuk produksi, ganti "*" dengan domain frontend yang spesifik
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "https://umkm-clientside.vercel.app",  # ← URL Vercel-mu
+        "http://localhost:5173",                  # untuk dev lokal
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
