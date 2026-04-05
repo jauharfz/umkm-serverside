@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Query
 from typing import Optional
-import requests as http
+import httpx
 import app.database as db
 from app.config import settings
 
@@ -30,9 +30,10 @@ async def get_public_event():
 
     url = f"{api_base.rstrip('/')}/api/events/public"
     try:
-        resp = http.get(url, timeout=_TIMEOUT)
-        resp.raise_for_status()
-        body = resp.json()
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            body = resp.json()
         # Gate mengembalikan { status, data: {...} | null }
         return {"status": "success", "data": body.get("data")}
     except Exception:
