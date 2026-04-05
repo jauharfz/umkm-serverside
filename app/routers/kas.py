@@ -148,9 +148,9 @@ def _get_kas_or_404(kas_id: str, umkm_id: str) -> dict:
         .select("*")
         .eq("id", kas_id)
         .eq("umkm_id", umkm_id)
-        .maybe_single()
+        .limit(1)
         .execute()
     )
     if not resp.data:
         raise HTTPException(404, detail={"status": "error", "message": "Data tidak ditemukan"})
-    return resp.data
+    return resp.data[0]

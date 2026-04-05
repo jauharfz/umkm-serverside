@@ -61,7 +61,7 @@ async def baca_notifikasi(notif_id: str, umkm: dict = Depends(get_current_umkm))
         .select("id")
         .eq("id", notif_id)
         .eq("umkm_id", umkm["id"])
-        .maybe_single()
+        .limit(1)
         .execute()
     )
     if not resp.data:

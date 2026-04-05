@@ -27,8 +27,8 @@ async def get_current_umkm(
     except JWTError:
         raise _credentials_exception
 
-    resp = db.supabase.table("umkm").select("*").eq("id", umkm_id).maybe_single().execute()
+    resp = db.supabase.table("umkm").select("*").eq("id", umkm_id).limit(1).execute()
     if not resp.data:
         raise _credentials_exception
 
-    return resp.data
+    return resp.data[0]

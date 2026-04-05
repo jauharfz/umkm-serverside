@@ -45,11 +45,11 @@ async def login(body: dict):
     if not email or not password:
         raise HTTPException(422, detail={"status": "error", "message": "Field email dan password wajib diisi"})
 
-    resp = db.supabase.table("umkm").select("*").eq("email", email).maybe_single().execute()
+    resp = db.supabase.table("umkm").select("*").eq("email", email).limit(1).execute()
     if not resp.data:
         raise HTTPException(401, detail={"status": "error", "message": "Email atau password salah"})
 
-    umkm = resp.data
+    umkm = resp.data[0]
     if not pwd_context.verify(password, umkm["password_hash"]):
         raise HTTPException(401, detail={"status": "error", "message": "Email atau password salah"})
 
@@ -97,7 +97,7 @@ async def register(
 
         # FIX: semua DB call sync → run_in_executor agar tidak block event loop
         def _check_email():
-            return db.supabase.table("umkm").select("id").eq("email", email).maybe_single().execute()
+            return db.supabase.table("umkm").select("id").eq("email", email).limit(1).execute()
 
         def _check_kios():
             return (
@@ -105,7 +105,7 @@ async def register(
                 .select("id")
                 .eq("nomor_stand", kios_id)
                 .neq("status_pendaftaran", "rejected")
-                .maybe_single()
+                .limit(1)
                 .execute()
             )
 
@@ -205,16 +205,16 @@ async def check_status(email: str):
     if not email:
         raise HTTPException(422, detail={"status": "error", "message": "Parameter email wajib diisi"})
 
-    resp = db.supabase.table("umkm").select("email, status_pendaftaran, nama_usaha").eq("email", email).maybe_single().execute()
+    resp = db.supabase.table("umkm").select("email, status_pendaftaran, nama_usaha").eq("email", email).limit(1).execute()
     if not resp.data:
         raise HTTPException(404, detail={"status": "error", "message": "Email tidak ditemukan"})
 
     return {
         "status": "success",
         "data": {
-            "email": resp.data["email"],
-            "status_pendaftaran": resp.data["status_pendaftaran"],
-            "nama_usaha": resp.data["nama_usaha"],
+            "email": resp.data[0]["email"],
+            "status_pendaftaran": resp.data[0]["status_pendaftaran"],
+            "nama_usaha": resp.data[0]["nama_usaha"],
         },
     }
 

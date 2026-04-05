@@ -126,12 +126,12 @@ def _get_barang_or_404(item_id: str, umkm_id: str) -> dict:
         .select("*")
         .eq("id", item_id)
         .eq("umkm_id", umkm_id)
-        .maybe_single()
+        .limit(1)
         .execute()
     )
     if not resp.data:
         raise HTTPException(404, detail={"status": "error", "message": "Data tidak ditemukan"})
-    return resp.data
+    return resp.data[0]
 
 
 def _buat_notif_stok_kritis(umkm_id: str, barang: dict):
