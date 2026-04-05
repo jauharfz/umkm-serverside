@@ -76,15 +76,6 @@ async def global_exception_handler(request: Request, exc: Exception):
         content={"status": "error", "message": "Terjadi kesalahan pada server. Silakan coba lagi."},
     )
 
-@app.exception_handler(BaseException)
-async def base_exception_handler(request: Request, exc: BaseException):
-    import asyncio
-    if isinstance(exc, asyncio.CancelledError):
-        logger.warning(f"Request cancelled: {request.url}")
-        return JSONResponse(status_code=503, content={"status": "error", "message": "Server sibuk, coba lagi."})
-    logger.error(f"BaseException on {request.url}: {exc}", exc_info=True)
-    return JSONResponse(status_code=500, content={"status": "error", "message": "Terjadi kesalahan pada server. Silakan coba lagi."})
-
 
 # ── Routers ───────────────────────────────────────────────────
 app.include_router(auth.router)
