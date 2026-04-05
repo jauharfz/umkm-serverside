@@ -1,9 +1,44 @@
 from fastapi import APIRouter, Query
 from typing import Optional
-from datetime import date
+import requests as http
 import app.database as db
+from app.config import settings
 
 router = APIRouter(prefix="/api/public", tags=["Publik (Gate Integration)"])
+
+_TIMEOUT = 8  # detik
+
+
+# ── GET /api/public/event ─────────────────────────────────────
+@router.get("/event")
+async def get_public_event():
+    """
+    Proxy ke Gate Backend GET /api/events/public (tanpa auth).
+    Mengembalikan event aktif atau event mendatang terdekat dari sistem Gate.
+    UMKM Frontend memakai tanggal ini untuk countdown dashboard.
+
+    Field yang dikembalikan: { id, nama_event, tanggal, lokasi, status }
+    Catatan: tanggal = DATE (YYYY-MM-DD). Frontend menggunakan
+             tanggal + "T08:00:00+07:00" sebagai target countdown.
+
+    Return { data: null } jika GATE_API_BASE_URL belum dikonfigurasi
+    atau tidak ada event aktif/mendatang.
+    """
+    api_base = (settings.GATE_API_BASE_URL or "").strip()
+    if not api_base:
+        return {"status": "success", "data": None}
+
+    url = f"{api_base.rstrip('/')}/api/events/public"
+    try:
+        resp = http.get(url, timeout=_TIMEOUT)
+        resp.raise_for_status()
+        body = resp.json()
+        # Gate mengembalikan { status, data: {...} | null }
+        return {"status": "success", "data": body.get("data")}
+    except Exception:
+        # Gagal hubungi Gate → kembalikan null, countdown tidak tampil
+        return {"status": "success", "data": None}
+
 
 
 # ── GET /api/public/tenant ────────────────────────────────────
@@ -43,6 +78,28 @@ async def get_public_tenant(
     return {"status": "success", "data": data}
 
 
+# ── GET /api/public/kios-tersedia ─────────────────────────────
+@router.get("/kios-tersedia")
+async def get_kios_tersedia():
+    """
+    Endpoint publik — dipanggil frontend Register untuk menampilkan
+    status kios real-time. Return: list nomor_stand yang sudah dipakai
+    (status pending atau approved). Frontend tandai kios ini sebagai 'full'.
+    """
+    resp = (
+        db.supabase.table("umkm")
+        .select("nomor_stand")
+        .neq("status_pendaftaran", "rejected")
+        .execute()
+    )
+    occupied = [
+        row["nomor_stand"]
+        for row in (resp.data or [])
+        if row.get("nomor_stand")
+    ]
+    return {"status": "success", "data": occupied}
+
+
 # ── GET /api/public/diskon ────────────────────────────────────
 @router.get("/diskon")
 async def get_public_diskon(
@@ -53,15 +110,17 @@ async def get_public_diskon(
     Endpoint publik tanpa auth — dipanggil Gate untuk menampilkan
     benefit diskon kepada member yang tap NFC (REQ-MEMBER-002).
     Data bersumber dari tabel promo UMKM yang sudah approved.
-    """
-    today = date.today().isoformat()
 
+    FIX: filter .gte("akhir", today) dihapus agar promo status=aktif
+    selalu tampil di Gate terlepas dari tanggal. Gate menampilkan
+    berlaku_hingga sehingga admin tahu mana yang sudah expired.
+    """
     # Join promo + umkm melalui FK
     promo_query = (
         db.supabase.table("promo")
         .select("*, umkm:umkm_id(id, nama_usaha, nomor_stand, status_pendaftaran)")
         .eq("status", "aktif")
-        .gte("akhir", today)  # Promo masih berlaku
+        # FIX: hapus .gte("akhir", today) — promo baru langsung tampil di Gate
     )
 
     if tenant_id:
