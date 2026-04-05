@@ -1,11 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException
-from passlib.context import CryptContext
 from app.deps import get_current_umkm
 from app.schemas import UpdateProfilRequest, GantiPasswordRequest
 import app.database as db
+import logging
 
 router = APIRouter(prefix="/api", tags=["Profil & Pengaturan"])
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+logger = logging.getLogger(__name__)
 
 
 def _fmt_profile(u: dict) -> dict:
@@ -73,13 +73,33 @@ async def update_profil(body: UpdateProfilRequest, umkm: dict = Depends(get_curr
 # ── PATCH /api/pengaturan/password ────────────────────────────
 @router.patch("/pengaturan/password")
 async def ganti_password(body: GantiPasswordRequest, umkm: dict = Depends(get_current_umkm)):
-    if body.password_baru != body.konfirmasi_password:
+    # Jika konfirmasi_password dikirim, validasi kecocokan (frontend sudah validasi duluan)
+    if body.konfirmasi_password is not None and body.password_baru != body.konfirmasi_password:
         raise HTTPException(400, detail={"status": "error", "message": "Password baru dan konfirmasi tidak sama"})
 
-    if not pwd_context.verify(body.password_lama, umkm["password_hash"]):
+    # ── Verifikasi password lama via Supabase Auth sign_in ───
+    # (sama seperti Gate yang menggunakan Supabase Auth)
+    try:
+        db.supabase.auth.sign_in_with_password({
+            "email": umkm["email"],
+            "password": body.password_lama,
+        })
+    except Exception:
         raise HTTPException(400, detail={"status": "error", "message": "Password lama tidak sesuai"})
 
-    new_hash = pwd_context.hash(body.password_baru)
-    db.supabase.table("umkm").update({"password_hash": new_hash}).eq("id", umkm["id"]).execute()
+    # ── Update password di Supabase Auth via admin API ───────
+    auth_id = umkm.get("auth_id")
+    if not auth_id:
+        logger.error(f"umkm {umkm['id']} tidak memiliki auth_id")
+        raise HTTPException(500, detail={"status": "error", "message": "Kesalahan konfigurasi akun. Hubungi admin."})
+
+    try:
+        db.supabase.auth.admin.update_user_by_id(
+            auth_id,
+            {"password": body.password_baru},
+        )
+    except Exception as e:
+        logger.error(f"update_user_by_id gagal untuk auth_id {auth_id}: {e}")
+        raise HTTPException(500, detail={"status": "error", "message": "Gagal mengubah password. Coba lagi."})
 
     return {"status": "success", "message": "Password berhasil diubah"}

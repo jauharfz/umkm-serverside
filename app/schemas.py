@@ -12,10 +12,10 @@ class LoginRequest(BaseModel):
 
 
 class KategoriUmkm(str, Enum):
-    kuliner  = "Kuliner"
-    fashion  = "Fashion"
+    kuliner   = "Kuliner"
+    fashion   = "Fashion"
     kerajinan = "Kerajinan"
-    lainnya  = "Lainnya"
+    lainnya   = "Lainnya"
 
 
 # ── Stok ──────────────────────────────────────────────────────
@@ -114,7 +114,10 @@ class UpdateProfilRequest(BaseModel):
 class GantiPasswordRequest(BaseModel):
     password_lama: str
     password_baru: str
-    konfirmasi_password: str
+    # Optional: validasi konfirmasi sudah dilakukan di frontend (SecurityForm.jsx).
+    # Dijadikan Optional agar payload dari frontend yang tidak mengirim field ini
+    # tidak menyebabkan 422. Backend tetap bisa validasi jika field dikirim.
+    konfirmasi_password: Optional[str] = None
 
     @field_validator("password_baru")
     @classmethod
