@@ -6,9 +6,12 @@ from jose import jwt
 from passlib.context import CryptContext
 from app.config import settings
 import app.database as db
+import asyncio
+import logging
 
 router = APIRouter(prefix="/api/auth", tags=["Autentikasi"])
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+logger = logging.getLogger(__name__)
 
 
 def create_access_token(umkm_id: str) -> str:
@@ -78,12 +81,13 @@ async def register(
     kategori: str = Form(...),
     deskripsi: Optional[str] = Form(None),
     kios_id: str = Form(...),
-    setuju: bool = Form(...),
+    setuju: str = Form(...),        # FIX: terima sebagai str, konversi manual
     file_ktp: UploadFile = File(...),
     file_nib: UploadFile = File(...),
 ):
-    # Validasi
-    if not setuju:
+    # FIX: konversi setuju manual (bool Form field bisa gagal di beberapa env)
+    setuju_bool = setuju.lower() in ("true", "1", "yes", "on")
+    if not setuju_bool:
         raise HTTPException(422, detail={"status": "error", "message": "Anda harus menyetujui syarat & ketentuan"})
     if len(password) < 6:
         raise HTTPException(422, detail={"status": "error", "message": "Password minimal 6 karakter"})
@@ -93,7 +97,7 @@ async def register(
     if existing_email.data:
         raise HTTPException(409, detail={"status": "error", "message": "Email sudah terdaftar. Silakan login atau gunakan email lain."})
 
-    # Cek kios sudah diambil (approved saja yang terkunci, pending bisa bentrok)
+    # Cek kios sudah diambil
     existing_kios = (
         db.supabase.table("umkm")
         .select("id")
@@ -105,9 +109,61 @@ async def register(
     if existing_kios.data:
         raise HTTPException(409, detail={"status": "error", "message": f"Kios {kios_id} sudah dipilih oleh pendaftar lain. Silakan pilih kios lain."})
 
-    # Upload dokumen ke Supabase Storage
-    ktp_url = await _upload_file(file_ktp, settings.STORAGE_BUCKET_DOKUMEN, f"ktp/{email}_{file_ktp.filename}")
-    nib_url = await _upload_file(file_nib, settings.STORAGE_BUCKET_DOKUMEN, f"nib/{email}_{file_nib.filename}")
+    # FIX: Baca file di sini (async, dalam event loop)
+    # sebelum melempar ke thread pool agar tidak ada masalah async/sync boundary
+    ktp_content = await file_ktp.read()
+    nib_content = await file_nib.read()
+    ktp_filename = file_ktp.filename or "ktp.jpg"
+    nib_filename = file_nib.filename or "nib.jpg"
+    ktp_content_type = file_ktp.content_type or "application/octet-stream"
+    nib_content_type = file_nib.content_type or "application/octet-stream"
+
+    # FIX: Jalankan storage upload di thread pool dengan timeout 15 detik.
+    # supabase-py storage client SYNC (blocking) — jika dipanggil langsung dari
+    # async endpoint, ia mem-block event loop. Jika bucket tidak ada atau
+    # network lambat, HuggingFace cancel request dengan CancelledError
+    # (BaseException, tidak ter-catch oleh 'except Exception') → 500 + Fetch failed.
+    loop = asyncio.get_event_loop()
+
+    def _upload_ktp() -> Optional[str]:
+        return _upload_sync(
+            ktp_content, ktp_content_type,
+            settings.STORAGE_BUCKET_DOKUMEN,
+            f"ktp/{email}_{ktp_filename}",
+            ktp_filename,
+        )
+
+    def _upload_nib() -> Optional[str]:
+        return _upload_sync(
+            nib_content, nib_content_type,
+            settings.STORAGE_BUCKET_DOKUMEN,
+            f"nib/{email}_{nib_filename}",
+            nib_filename,
+        )
+
+    try:
+        ktp_url = await asyncio.wait_for(
+            loop.run_in_executor(None, _upload_ktp),
+            timeout=15.0,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("Upload KTP timeout — menyimpan nama file sebagai fallback")
+        ktp_url = ktp_filename
+    except Exception as e:
+        logger.warning(f"Upload KTP gagal ({e}) — menyimpan nama file sebagai fallback")
+        ktp_url = ktp_filename
+
+    try:
+        nib_url = await asyncio.wait_for(
+            loop.run_in_executor(None, _upload_nib),
+            timeout=15.0,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("Upload NIB timeout — menyimpan nama file sebagai fallback")
+        nib_url = nib_filename
+    except Exception as e:
+        logger.warning(f"Upload NIB gagal ({e}) — menyimpan nama file sebagai fallback")
+        nib_url = nib_filename
 
     password_hash = pwd_context.hash(password)
     zona = _kategori_to_zona(kategori)
@@ -127,7 +183,12 @@ async def register(
         "file_nib_url": nib_url,
     }
 
-    resp = db.supabase.table("umkm").insert(new_umkm).execute()
+    try:
+        resp = db.supabase.table("umkm").insert(new_umkm).execute()
+    except Exception as e:
+        logger.error(f"DB insert gagal: {e}")
+        raise HTTPException(500, detail={"status": "error", "message": "Gagal menyimpan data. Coba lagi."})
+
     if not resp.data:
         raise HTTPException(500, detail={"status": "error", "message": "Gagal menyimpan data. Coba lagi."})
 
@@ -160,18 +221,26 @@ async def check_status(email: str):
 
 # ── Helpers ───────────────────────────────────────────────────
 
-async def _upload_file(upload: UploadFile, bucket: str, path: str) -> Optional[str]:
-    """Upload file ke Supabase Storage. Return public/signed URL atau None jika gagal."""
+def _upload_sync(
+    content: bytes,
+    content_type: str,
+    bucket: str,
+    path: str,
+    fallback_name: str,
+) -> Optional[str]:
+    """
+    Upload file ke Supabase Storage — SYNC, dimaksudkan untuk dipanggil via run_in_executor.
+    Return public URL atau fallback_name jika gagal.
+    """
     try:
-        content = await upload.read()
-        content_type = upload.content_type or "application/octet-stream"
-        db.supabase.storage.from_(bucket).upload(path, content, {"content-type": content_type, "upsert": "true"})
-        # Untuk bucket private, gunakan signed URL. Untuk public, gunakan public URL.
-        url = db.supabase.storage.from_(bucket).get_public_url(path)
-        return url
-    except Exception:
-        # Jika storage belum dikonfigurasi, simpan saja nama file
-        return upload.filename
+        db.supabase.storage.from_(bucket).upload(
+            path, content,
+            {"content-type": content_type, "upsert": "true"},
+        )
+        return db.supabase.storage.from_(bucket).get_public_url(path)
+    except Exception as e:
+        logger.warning(f"Storage upload gagal ({bucket}/{path}): {e}")
+        return fallback_name
 
 
 def _kategori_to_zona(kategori: str) -> str:
