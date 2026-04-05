@@ -243,6 +243,24 @@ def _upload_sync(
         return fallback_name
 
 
+async def _upload_file(file, bucket: str, path: str) -> Optional[str]:
+    """Async wrapper agar bisa di-await dari router lain (promo, profil, dll.)."""
+    content = await file.read()
+    loop = asyncio.get_event_loop()
+    return await asyncio.wait_for(
+        loop.run_in_executor(
+            None,
+            _upload_sync,
+            content,
+            file.content_type or "application/octet-stream",
+            bucket,
+            path,
+            file.filename,
+        ),
+        timeout=15,
+    )
+
+
 def _kategori_to_zona(kategori: str) -> str:
     mapping = {
         "Kuliner": "Kuliner",
