@@ -81,122 +81,122 @@ async def register(
     kategori: str = Form(...),
     deskripsi: Optional[str] = Form(None),
     kios_id: str = Form(...),
-    setuju: str = Form(...),        # FIX: terima sebagai str, konversi manual
+    setuju: str = Form(...),
     file_ktp: UploadFile = File(...),
     file_nib: UploadFile = File(...),
 ):
-    # FIX: konversi setuju manual (bool Form field bisa gagal di beberapa env)
-    setuju_bool = setuju.lower() in ("true", "1", "yes", "on")
-    if not setuju_bool:
-        raise HTTPException(422, detail={"status": "error", "message": "Anda harus menyetujui syarat & ketentuan"})
-    if len(password) < 6:
-        raise HTTPException(422, detail={"status": "error", "message": "Password minimal 6 karakter"})
-
-    # Cek email duplikat
-    existing_email = db.supabase.table("umkm").select("id").eq("email", email).maybe_single().execute()
-    if existing_email.data:
-        raise HTTPException(409, detail={"status": "error", "message": "Email sudah terdaftar. Silakan login atau gunakan email lain."})
-
-    # Cek kios sudah diambil
-    existing_kios = (
-        db.supabase.table("umkm")
-        .select("id")
-        .eq("nomor_stand", kios_id)
-        .neq("status_pendaftaran", "rejected")
-        .maybe_single()
-        .execute()
-    )
-    if existing_kios.data:
-        raise HTTPException(409, detail={"status": "error", "message": f"Kios {kios_id} sudah dipilih oleh pendaftar lain. Silakan pilih kios lain."})
-
-    # FIX: Baca file di sini (async, dalam event loop)
-    # sebelum melempar ke thread pool agar tidak ada masalah async/sync boundary
-    ktp_content = await file_ktp.read()
-    nib_content = await file_nib.read()
-    ktp_filename = file_ktp.filename or "ktp.jpg"
-    nib_filename = file_nib.filename or "nib.jpg"
-    ktp_content_type = file_ktp.content_type or "application/octet-stream"
-    nib_content_type = file_nib.content_type or "application/octet-stream"
-
-    # FIX: Jalankan storage upload di thread pool dengan timeout 15 detik.
-    # supabase-py storage client SYNC (blocking) — jika dipanggil langsung dari
-    # async endpoint, ia mem-block event loop. Jika bucket tidak ada atau
-    # network lambat, HuggingFace cancel request dengan CancelledError
-    # (BaseException, tidak ter-catch oleh 'except Exception') → 500 + Fetch failed.
-    loop = asyncio.get_event_loop()
-
-    def _upload_ktp() -> Optional[str]:
-        return _upload_sync(
-            ktp_content, ktp_content_type,
-            settings.STORAGE_BUCKET_DOKUMEN,
-            f"ktp/{email}_{ktp_filename}",
-            ktp_filename,
-        )
-
-    def _upload_nib() -> Optional[str]:
-        return _upload_sync(
-            nib_content, nib_content_type,
-            settings.STORAGE_BUCKET_DOKUMEN,
-            f"nib/{email}_{nib_filename}",
-            nib_filename,
-        )
-
     try:
-        ktp_url = await asyncio.wait_for(
-            loop.run_in_executor(None, _upload_ktp),
-            timeout=15.0,
-        )
-    except asyncio.TimeoutError:
-        logger.warning("Upload KTP timeout — menyimpan nama file sebagai fallback")
-        ktp_url = ktp_filename
-    except Exception as e:
-        logger.warning(f"Upload KTP gagal ({e}) — menyimpan nama file sebagai fallback")
-        ktp_url = ktp_filename
+        # FIX: konversi setuju manual
+        setuju_bool = setuju.lower() in ("true", "1", "yes", "on")
+        if not setuju_bool:
+            raise HTTPException(422, detail={"status": "error", "message": "Anda harus menyetujui syarat & ketentuan"})
+        if len(password) < 6:
+            raise HTTPException(422, detail={"status": "error", "message": "Password minimal 6 karakter"})
 
-    try:
-        nib_url = await asyncio.wait_for(
-            loop.run_in_executor(None, _upload_nib),
-            timeout=15.0,
-        )
-    except asyncio.TimeoutError:
-        logger.warning("Upload NIB timeout — menyimpan nama file sebagai fallback")
-        nib_url = nib_filename
-    except Exception as e:
-        logger.warning(f"Upload NIB gagal ({e}) — menyimpan nama file sebagai fallback")
-        nib_url = nib_filename
+        loop = asyncio.get_event_loop()
 
-    password_hash = pwd_context.hash(password)
-    zona = _kategori_to_zona(kategori)
+        # FIX: semua DB call sync → run_in_executor agar tidak block event loop
+        def _check_email():
+            return db.supabase.table("umkm").select("id").eq("email", email).maybe_single().execute()
 
-    new_umkm = {
-        "nama_pemilik": nama_pemilik,
-        "email": email,
-        "password_hash": password_hash,
-        "nama_usaha": nama_usaha,
-        "alamat": alamat,
-        "kategori": kategori,
-        "deskripsi": deskripsi,
-        "nomor_stand": kios_id,
-        "zona": zona,
-        "status_pendaftaran": "pending",
-        "file_ktp_url": ktp_url,
-        "file_nib_url": nib_url,
-    }
+        def _check_kios():
+            return (
+                db.supabase.table("umkm")
+                .select("id")
+                .eq("nomor_stand", kios_id)
+                .neq("status_pendaftaran", "rejected")
+                .maybe_single()
+                .execute()
+            )
 
-    try:
-        resp = db.supabase.table("umkm").insert(new_umkm).execute()
-    except Exception as e:
-        logger.error(f"DB insert gagal: {e}")
-        raise HTTPException(500, detail={"status": "error", "message": "Gagal menyimpan data. Coba lagi."})
+        try:
+            existing_email = await asyncio.wait_for(loop.run_in_executor(None, _check_email), timeout=10)
+        except asyncio.TimeoutError:
+            raise HTTPException(503, detail={"status": "error", "message": "Database timeout, coba lagi."})
 
-    if not resp.data:
-        raise HTTPException(500, detail={"status": "error", "message": "Gagal menyimpan data. Coba lagi."})
+        if existing_email.data:
+            raise HTTPException(409, detail={"status": "error", "message": "Email sudah terdaftar. Silakan login atau gunakan email lain."})
 
-    return {
-        "status": "success",
-        "message": "Pendaftaran berhasil! Menunggu konfirmasi admin.",
-        "data": _umkm_to_profile(resp.data[0]),
-    }
+        try:
+            existing_kios = await asyncio.wait_for(loop.run_in_executor(None, _check_kios), timeout=10)
+        except asyncio.TimeoutError:
+            raise HTTPException(503, detail={"status": "error", "message": "Database timeout, coba lagi."})
+
+        if existing_kios.data:
+            raise HTTPException(409, detail={"status": "error", "message": f"Kios {kios_id} sudah dipilih oleh pendaftar lain. Silakan pilih kios lain."})
+
+        # Baca file async
+        ktp_content = await file_ktp.read()
+        nib_content = await file_nib.read()
+        ktp_filename = file_ktp.filename or "ktp.jpg"
+        nib_filename = file_nib.filename or "nib.jpg"
+        ktp_content_type = file_ktp.content_type or "application/octet-stream"
+        nib_content_type = file_nib.content_type or "application/octet-stream"
+
+        def _upload_ktp() -> Optional[str]:
+            return _upload_sync(ktp_content, ktp_content_type, settings.STORAGE_BUCKET_DOKUMEN, f"ktp/{email}_{ktp_filename}", ktp_filename)
+
+        def _upload_nib() -> Optional[str]:
+            return _upload_sync(nib_content, nib_content_type, settings.STORAGE_BUCKET_DOKUMEN, f"nib/{email}_{nib_filename}", nib_filename)
+
+        try:
+            ktp_url = await asyncio.wait_for(loop.run_in_executor(None, _upload_ktp), timeout=15.0)
+        except (asyncio.TimeoutError, Exception) as e:
+            logger.warning(f"Upload KTP gagal ({e}) — fallback ke nama file")
+            ktp_url = ktp_filename
+
+        try:
+            nib_url = await asyncio.wait_for(loop.run_in_executor(None, _upload_nib), timeout=15.0)
+        except (asyncio.TimeoutError, Exception) as e:
+            logger.warning(f"Upload NIB gagal ({e}) — fallback ke nama file")
+            nib_url = nib_filename
+
+        password_hash = pwd_context.hash(password)
+        zona = _kategori_to_zona(kategori)
+
+        new_umkm = {
+            "nama_pemilik": nama_pemilik,
+            "email": email,
+            "password_hash": password_hash,
+            "nama_usaha": nama_usaha,
+            "alamat": alamat,
+            "kategori": kategori,
+            "deskripsi": deskripsi,
+            "nomor_stand": kios_id,
+            "zona": zona,
+            "status_pendaftaran": "pending",
+            "file_ktp_url": ktp_url,
+            "file_nib_url": nib_url,
+        }
+
+        def _insert():
+            return db.supabase.table("umkm").insert(new_umkm).execute()
+
+        try:
+            resp = await asyncio.wait_for(loop.run_in_executor(None, _insert), timeout=10)
+        except asyncio.TimeoutError:
+            raise HTTPException(503, detail={"status": "error", "message": "Database timeout saat menyimpan data."})
+        except Exception as e:
+            logger.error(f"DB insert gagal: {e}")
+            raise HTTPException(500, detail={"status": "error", "message": "Gagal menyimpan data. Coba lagi."})
+
+        if not resp.data:
+            raise HTTPException(500, detail={"status": "error", "message": "Gagal menyimpan data. Coba lagi."})
+
+        return {
+            "status": "success",
+            "message": "Pendaftaran berhasil! Menunggu konfirmasi admin.",
+            "data": _umkm_to_profile(resp.data[0]),
+        }
+
+    except HTTPException:
+        raise
+    except asyncio.CancelledError:
+        logger.warning("Register request cancelled by client/server")
+        raise HTTPException(503, detail={"status": "error", "message": "Request dibatalkan, coba lagi."})
+    except BaseException as e:
+        logger.error(f"Unexpected error in register: {e}", exc_info=True)
+        raise HTTPException(500, detail={"status": "error", "message": "Terjadi kesalahan pada server. Silakan coba lagi."})
 
 
 # ── GET /api/auth/status ──────────────────────────────────────
