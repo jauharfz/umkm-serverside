@@ -15,6 +15,12 @@ class Settings(BaseSettings):
     # Kosongkan jika tidak ada integrasi → countdown tidak tampil.
     GATE_API_BASE_URL: str = ""
 
+    # ── Admin Secret Key (service-to-service auth) ───────────────────────────
+    # Digunakan oleh Gate Backend untuk memanggil endpoint admin UMKM.
+    # Harus sama dengan UMKM_ADMIN_SECRET_KEY di Gate Backend (.env).
+    # Buat dengan: python -c "import secrets; print(secrets.token_hex(32))"
+    ADMIN_SECRET_KEY: str = ""
+
     class Config:
         env_file = ".env"
         extra = "ignore"
