@@ -14,6 +14,7 @@ Endpoints:
 """
 
 import logging
+import re
 from fastapi import APIRouter, HTTPException, Header, Query
 from typing import Optional
 import app.database as db
@@ -21,6 +22,10 @@ from app.config import settings
 
 router = APIRouter(prefix="/api/admin", tags=["Admin"])
 logger = logging.getLogger(__name__)
+
+# Signed URL berlaku 1 jam (3600 detik).
+# Cukup untuk admin melihat dokumen — tidak perlu lama.
+SIGNED_URL_EXPIRES = 3600
 
 
 def _verify_admin_key(x_admin_key: Optional[str]) -> None:
@@ -37,22 +42,97 @@ def _verify_admin_key(x_admin_key: Optional[str]) -> None:
         )
 
 
+def _extract_storage_path(url: Optional[str], bucket: str) -> Optional[str]:
+    """
+    Ekstrak path relatif dari URL storage Supabase.
+
+    URL format dari get_public_url():
+      https://PROJECT.supabase.co/storage/v1/object/public/BUCKET/path/to/file.jpg
+    atau dari create_signed_url() sebelumnya:
+      https://PROJECT.supabase.co/storage/v1/object/sign/BUCKET/path/to/file.jpg?token=...
+
+    Return: "path/to/file.jpg" (tanpa leading slash), atau None jika tidak bisa diekstrak.
+    """
+    if not url:
+        return None
+
+    # Coba ekstrak dari pola URL Supabase storage (public atau signed)
+    patterns = [
+        rf"/storage/v1/object/(?:public|sign)/{re.escape(bucket)}/(.+?)(?:\?|$)",
+        rf"/object/(?:public|sign)/{re.escape(bucket)}/(.+?)(?:\?|$)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
+
+    # Fallback: kalau URL tidak dikenali (misalnya hanya nama file dari fallback upload),
+    # kembalikan None — kita tidak bisa buat signed URL dari nama file saja.
+    return None
+
+
+def _make_signed_url(path: Optional[str], bucket: str) -> Optional[str]:
+    """
+    Buat signed URL untuk file di bucket private Supabase Storage.
+    Return None jika path kosong atau pembuatan URL gagal.
+    """
+    if not path:
+        return None
+    try:
+        result = db.supabase.storage.from_(bucket).create_signed_url(path, SIGNED_URL_EXPIRES)
+        # supabase-py v2: result adalah dict {"signedURL": "...", "error": None}
+        # supabase-py v1: result adalah dict {"signedURL": "..."}
+        signed = result.get("signedURL") or result.get("signed_url") or result.get("url")
+        if not signed:
+            logger.warning(f"create_signed_url tidak mengembalikan URL untuk {bucket}/{path}: {result}")
+        return signed
+    except Exception as e:
+        logger.warning(f"Gagal membuat signed URL untuk {bucket}/{path}: {e}")
+        return None
+
+
+def _resolve_doc_url(raw_url: Optional[str], bucket: str) -> Optional[str]:
+    """
+    Ubah raw URL (public URL atau fallback filename) ke signed URL.
+    Jika signed URL gagal dibuat, kembalikan raw_url apa adanya
+    (lebih baik user dapat error 400 dari Supabase daripada link None).
+    """
+    if not raw_url:
+        return None
+
+    path = _extract_storage_path(raw_url, bucket)
+    if not path:
+        # Mungkin hanya nama file dari fallback upload — tidak bisa dibuat signed URL
+        logger.debug(f"Tidak bisa ekstrak path dari URL: {raw_url}")
+        return raw_url  # kembalikan as-is
+
+    signed = _make_signed_url(path, bucket)
+    return signed if signed else raw_url  # fallback ke raw_url jika gagal
+
+
 def _umkm_to_registration(u: dict) -> dict:
-    """Serialisasi data UMKM untuk response registrasi."""
+    """
+    Serialisasi data UMKM untuk response registrasi.
+    KTP dan NIB di-resolve ke signed URL agar bisa dibuka dari browser
+    meskipun bucket 'dokumen-umkm' bersifat private.
+    """
+    bucket = settings.STORAGE_BUCKET_DOKUMEN  # "dokumen-umkm"
+
     return {
-        "id": u["id"],
-        "nama_pemilik": u["nama_pemilik"],
-        "email": u["email"],
-        "nama_usaha": u["nama_usaha"],
-        "alamat": u.get("alamat"),
-        "kategori": u.get("kategori"),
-        "deskripsi": u.get("deskripsi"),
-        "nomor_stand": u.get("nomor_stand"),
-        "zona": u.get("zona"),
+        "id":                 u["id"],
+        "nama_pemilik":       u["nama_pemilik"],
+        "email":              u["email"],
+        "nama_usaha":         u["nama_usaha"],
+        "alamat":             u.get("alamat"),
+        "kategori":           u.get("kategori"),
+        "deskripsi":          u.get("deskripsi"),
+        "nomor_stand":        u.get("nomor_stand"),
+        "zona":               u.get("zona"),
         "status_pendaftaran": u["status_pendaftaran"],
-        "file_ktp_url": u.get("file_ktp_url"),
-        "file_nib_url": u.get("file_nib_url"),
-        "created_at": u["created_at"],
+        # Signed URLs — berlaku 1 jam. None jika tidak ada file.
+        "file_ktp_url":       _resolve_doc_url(u.get("file_ktp_url"), bucket),
+        "file_nib_url":       _resolve_doc_url(u.get("file_nib_url"), bucket),
+        "created_at":         u["created_at"],
     }
 
 
@@ -66,6 +146,8 @@ async def list_registrations(
     List pendaftaran UMKM.
     - Tanpa filter status → kembalikan semua
     - ?status=pending     → hanya yang menunggu persetujuan
+
+    file_ktp_url dan file_nib_url dikembalikan sebagai signed URL (berlaku 1 jam).
     """
     _verify_admin_key(x_admin_key)
 
@@ -118,7 +200,7 @@ async def update_registration_status(
         # Cek eksistensi dulu
         check = (
             db.supabase.table("umkm")
-            .select("id, status_pendaftaran, email, nama_usaha")
+            .select("id, status_pendaftaran, email, nama_usaha, file_ktp_url, file_nib_url, nama_pemilik, alamat, kategori, deskripsi, nomor_stand, zona, created_at")
             .eq("id", umkm_id)
             .limit(1)
             .execute()
