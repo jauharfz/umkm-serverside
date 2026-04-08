@@ -7,7 +7,8 @@ import logging
 from app.config import settings
 import app.database as db
 from app.routers import auth, dashboard, stok, kas, promo, transaksi, notifikasi, profil, public
-from app.routers import admin  # ← Router baru untuk manajemen pendaftaran
+from app.routers import admin          # Router manajemen pendaftaran (Gate → UMKM)
+from app.routers import member_lookup  # ← NEW: Proxy member lookup ke Gate Backend
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -53,6 +54,9 @@ Key ini hanya diketahui oleh Gate Backend dan dikonfigurasi via env var
 ## Integrasi Gate
 Endpoint `/api/public/tenant` dan `/api/public/diskon` adalah endpoint
 **publik tanpa auth** yang dipanggil oleh backend Gate (REQ-INTEG-001).
+
+Endpoint `/api/member/lookup` mem-proxy request verifikasi member ke Gate Backend.
+UMKM user wajib login (JWT) untuk mengakses endpoint ini.
     """,
     version="1.0.0",
     contact={"name": "Tim Pengembang UMKM Peken Banyumas"},
@@ -64,7 +68,7 @@ Endpoint `/api/public/tenant` dan `/api/public/diskon` adalah endpoint
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://umkm-development.vercel.app",  # ← URL Vercel-mu
+        "https://umkm-development.vercel.app",  # ← URL Vercel
         "http://localhost:5173",                  # untuk dev lokal
     ],
     allow_credentials=True,
@@ -93,7 +97,8 @@ app.include_router(transaksi.router)
 app.include_router(notifikasi.router)
 app.include_router(profil.router)
 app.include_router(public.router)
-app.include_router(admin.router)   # ← Admin router (manajemen pendaftaran)
+app.include_router(admin.router)          # Admin router (manajemen pendaftaran)
+app.include_router(member_lookup.router)  # ← NEW: Member lookup proxy
 
 
 # ── Health Check ──────────────────────────────────────────────

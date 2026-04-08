@@ -15,6 +15,14 @@ class Settings(BaseSettings):
     # Kosongkan jika tidak ada integrasi → countdown tidak tampil.
     GATE_API_BASE_URL: str = ""
 
+    # ── Gate Member Lookup Key (NEW) ─────────────────────────────────────────
+    # Shared secret antara UMKM Backend dan Gate Backend.
+    # Dikirim via header X-Member-Lookup-Key ke GET /api/members/lookup.
+    # Harus sama dengan MEMBER_LOOKUP_API_KEY di Gate Backend (.env HuggingFace).
+    # Generate: python -c "import secrets; print(secrets.token_hex(32))"
+    # Set di HuggingFace Secrets: GATE_LOOKUP_KEY
+    GATE_LOOKUP_KEY: str = ""
+
     # ── Admin Secret Key (service-to-service auth) ───────────────────────────
     # Digunakan oleh Gate Backend untuk memanggil endpoint admin UMKM.
     # Harus sama dengan UMKM_ADMIN_SECRET_KEY di Gate Backend (.env).
