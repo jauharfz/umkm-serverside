@@ -68,9 +68,11 @@ UMKM user wajib login (JWT) untuk mengakses endpoint ini.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://umkm-development.vercel.app",  # ← URL Vercel
-        "http://localhost:5173",                  # untuk dev lokal
+        "https://umkm-development.vercel.app",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
     ],
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -116,7 +118,7 @@ async def root():
 async def health():
     db_ok = False
     try:
-        db.supabase.table("umkm").select("id").limit(1).execute()
+        db.get_client().table("umkm").select("id").limit(1).execute()
         db_ok = True
     except Exception:
         pass
