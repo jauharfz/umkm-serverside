@@ -168,3 +168,28 @@ def _parse_persentase(tipe: str, nilai: str) -> float:
         except (ValueError, AttributeError):
             return 0.0
     return 0.0
+
+
+# ── GET /api/public/check-email ───────────────────────────────
+@router.get("/check-email")
+async def check_email_availability(email: str = Query(...)):
+    """
+    Cek ketersediaan email sebelum submit register.
+    Dipanggil frontend Register.jsx saat user selesai mengetik email (debounce).
+    Return: { available: true } jika email belum dipakai.
+    """
+    if not email or "@" not in email:
+        return {"status": "success", "available": False, "message": "Format email tidak valid"}
+    resp = (
+        db.supabase.table("umkm")
+        .select("id")
+        .eq("email", email.strip().lower())
+        .limit(1)
+        .execute()
+    )
+    available = not bool(resp.data)
+    return {
+        "status": "success",
+        "available": available,
+        "message": "Email tersedia" if available else "Email sudah terdaftar",
+    }
