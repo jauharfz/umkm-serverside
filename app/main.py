@@ -21,7 +21,7 @@ async def lifespan(app: FastAPI):
     try:
         db.init_db()
         # Smoke test — pastikan koneksi berhasil
-        db.supabase.table("umkm").select("id").limit(1).execute()
+        db.get_client().table("umkm").select("id").limit(1).execute()
         logger.info("✅ Koneksi Supabase berhasil.")
     except RuntimeError as e:
         logger.error(f"❌ {e}")
