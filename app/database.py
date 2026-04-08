@@ -1,25 +1,16 @@
-from supabase import Client, create_client
+from __future__ import annotations
+
+from threading import Lock
 import logging
+
+from supabase import Client, create_client
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-
-class SupabaseProxy:
-    """
-    Proxy tipis agar seluruh pemanggilan existing `db.supabase.*` tetap kompatibel.
-
-    Desain ini sengaja mengambil client fresh pada setiap akses atribut. Di deployment
-    Hugging Face / container yang sering idle, pendekatan ini jauh lebih stabil
-    dibanding mempertahankan singleton lama yang rawan stale connection.
-    """
-
-    def __getattr__(self, name):
-        return getattr(get_client(), name)
-
-
-supabase = SupabaseProxy()
+_client_lock = Lock()
+_client: Client | None = None
 
 
 def _create_client() -> Client:
@@ -30,26 +21,45 @@ def _create_client() -> Client:
     return create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
 
 
+class SupabaseProxy:
+    """
+    Proxy kompatibilitas untuk pemanggilan lama `db.supabase.*`.
+
+    Perbaikan penting:
+    - Client TIDAK dibuat ulang di setiap akses atribut.
+    - Satu instance dipakai bersama agar latency tidak membengkak.
+    - Reconnect eksplisit tetap tersedia melalui `reconnect()` saat koneksi terdeteksi bermasalah.
+    """
+
+    def __getattr__(self, name):
+        return getattr(get_client(), name)
+
+
+supabase = SupabaseProxy()
+
+
 def init_db() -> Client:
-    """Smoke-test koneksi saat startup."""
-    client = _create_client()
+    """Inisialisasi client sekali saat startup dan lakukan smoke-test ringan."""
+    client = get_client(force_refresh=True)
     logger.info("Supabase client initialized successfully.")
     return client
 
 
 def get_client(force_refresh: bool = False) -> Client:
     """
-    Kembalikan Supabase client baru.
+    Kembalikan singleton client Supabase.
 
-    `force_refresh` dipertahankan untuk kompatibilitas pemanggil lama, walau secara
-    implementasi kedua mode sama-sama menghasilkan client baru demi menghindari
-    stale connection pada koneksi yang lama idle.
+    `force_refresh=True` dipakai saat ingin membuat ulang koneksi, misalnya setelah
+    terdeteksi timeout / broken pipe / koneksi stale.
     """
-    _ = force_refresh
-    return _create_client()
+    global _client
+    with _client_lock:
+        if force_refresh or _client is None:
+            _client = _create_client()
+    return _client
 
 
 def reconnect() -> Client:
-    """Alias eksplisit untuk mendapatkan client baru."""
-    logger.warning("Recreating fresh Supabase client...")
-    return _create_client()
+    """Buat ulang client Supabase dan kembalikan instance baru."""
+    logger.warning("Recreating Supabase client...")
+    return get_client(force_refresh=True)
