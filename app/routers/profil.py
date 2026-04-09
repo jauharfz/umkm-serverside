@@ -6,6 +6,7 @@ import app.database as db
 import logging
 import uuid
 import mimetypes
+import httpx
 
 router = APIRouter(prefix="/api", tags=["Profil & Pengaturan"])
 logger = logging.getLogger(__name__)
@@ -135,13 +136,29 @@ async def upload_qris(
 
     try:
         bucket = settings.STORAGE_BUCKET_POSTER  # poster-promo (public)
-        db.supabase.storage.from_(bucket).upload(
-            file_path,
-            contents,
-            {"content-type": content_type, "upsert": "true"},
+
+        # ── Gunakan direct HTTP request agar service_role key benar-benar
+        # dipakai — supabase-py storage client kadang tidak meneruskan key
+        # dengan benar sehingga terkena RLS "Unauthorized". ────────────────
+        storage_url = (
+            f"{settings.SUPABASE_URL}/storage/v1/object/{bucket}/{file_path}"
         )
-        # Bangun URL publik
-        qris_url = f"{settings.SUPABASE_URL}/storage/v1/object/public/{bucket}/{file_path}"
+        headers = {
+            "Authorization": f"Bearer {settings.SUPABASE_SERVICE_ROLE_KEY}",
+            "Content-Type": content_type,
+            "x-upsert": "true",
+        }
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(storage_url, content=contents, headers=headers)
+            if resp.status_code not in (200, 201):
+                logger.error(f"Storage upload gagal: {resp.status_code} {resp.text}")
+                raise Exception(f"Storage {resp.status_code}: {resp.text}")
+
+        qris_url = (
+            f"{settings.SUPABASE_URL}/storage/v1/object/public/{bucket}/{file_path}"
+        )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"QRIS upload error: {e}")
         raise HTTPException(500, detail={"status": "error", "message": "Gagal mengupload foto QRIS"})
