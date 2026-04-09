@@ -46,7 +46,6 @@ async def get_public_event():
 @router.get("/tenant")
 async def get_public_tenant(
     kategori: Optional[str] = Query(None),
-    is_aktif: Optional[bool] = Query(True),
 ):
     """
     Endpoint publik tanpa auth — dipanggil oleh backend Gate sebagai proxy.
@@ -170,26 +169,5 @@ def _parse_persentase(tipe: str, nilai: str) -> float:
     return 0.0
 
 
-# ── GET /api/public/check-email ───────────────────────────────
-@router.get("/check-email")
-async def check_email_availability(email: str = Query(...)):
-    """
-    Cek ketersediaan email sebelum submit register.
-    Dipanggil frontend Register.jsx saat user selesai mengetik email (debounce).
-    Return: { available: true } jika email belum dipakai.
-    """
-    if not email or "@" not in email:
-        return {"status": "success", "available": False, "message": "Format email tidak valid"}
-    resp = (
-        db.supabase.table("umkm")
-        .select("id")
-        .eq("email", email.strip().lower())
-        .limit(1)
-        .execute()
-    )
-    available = not bool(resp.data)
-    return {
-        "status": "success",
-        "available": available,
-        "message": "Email tersedia" if available else "Email sudah terdaftar",
-    }
+# GET /api/public/check-email — DIHAPUS (REQ: user enumeration vulnerability)
+# Validasi duplikat email kini ditangani via 409 Conflict di POST /api/auth/register.

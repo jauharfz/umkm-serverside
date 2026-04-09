@@ -84,7 +84,7 @@ async def register(
     alamat: str           = Form(""),
     kategori: str         = Form(...),
     deskripsi: Optional[str] = Form(None),
-    kios_id: str          = Form(...),
+    nomor_stand: str      = Form(...),
     setuju: str           = Form(...),
     file_ktp: UploadFile  = File(...),
     file_nib: UploadFile  = File(...),
@@ -95,8 +95,8 @@ async def register(
         setuju_bool = setuju.lower() in ("true", "1", "yes", "on")
         if not setuju_bool:
             raise HTTPException(422, detail={"status": "error", "message": "Anda harus menyetujui syarat & ketentuan"})
-        if len(password) < 6:
-            raise HTTPException(422, detail={"status": "error", "message": "Password minimal 6 karakter"})
+        if len(password) < 8:
+            raise HTTPException(422, detail={"status": "error", "message": "Password minimal 8 karakter"})
 
         loop = asyncio.get_event_loop()
 
@@ -107,7 +107,7 @@ async def register(
             return (
                 db.supabase.table("umkm")
                 .select("id")
-                .eq("nomor_stand", kios_id)
+                .eq("nomor_stand", nomor_stand)
                 .neq("status_pendaftaran", "rejected")
                 .limit(1)
                 .execute()
@@ -127,7 +127,7 @@ async def register(
             raise HTTPException(503, detail={"status": "error", "message": "Database timeout, coba lagi."})
 
         if existing_kios.data:
-            raise HTTPException(409, detail={"status": "error", "message": f"Kios {kios_id} sudah dipilih oleh pendaftar lain. Silakan pilih kios lain."})
+            raise HTTPException(409, detail={"status": "error", "message": f"Kios {nomor_stand} sudah dipilih oleh pendaftar lain. Silakan pilih kios lain."})
 
         # ── Buat user di Supabase Auth ─────────────────────────
         def _create_auth_user():
@@ -190,7 +190,7 @@ async def register(
             "alamat":            alamat,
             "kategori":          kategori,
             "deskripsi":         deskripsi,
-            "nomor_stand":       kios_id,
+            "nomor_stand":       nomor_stand,
             "zona":              zona,
             "status_pendaftaran": "pending",
             "file_ktp_url":      ktp_url,
@@ -254,7 +254,7 @@ async def check_status(email: str):
 
     resp = (
         db.supabase.table("umkm")
-        .select("email, status_pendaftaran, nama_usaha")
+        .select("email, status_pendaftaran")
         .eq("email", email)
         .limit(1)
         .execute()
@@ -267,7 +267,6 @@ async def check_status(email: str):
         "data": {
             "email": resp.data[0]["email"],
             "status_pendaftaran": resp.data[0]["status_pendaftaran"],
-            "nama_usaha": resp.data[0]["nama_usaha"],
         },
     }
 
