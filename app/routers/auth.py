@@ -271,6 +271,24 @@ async def check_status(email: str):
     }
 
 
+# ── GET /api/auth/check-email ─────────────────────────────────
+# Dipanggil oleh form Register (on-blur) untuk cek ketersediaan email
+# sebelum user submit. Tidak memerlukan JWT karena user belum login.
+# ⚠ Rate-limit wajib di reverse-proxy: maks 30 req/menit per IP.
+@router.get("/check-email")
+async def check_email_availability(email: str):
+    if not email or "@" not in email:
+        return {"status": "success", "available": False}
+    resp = (
+        db.supabase.table("umkm")
+        .select("id")
+        .eq("email", email.strip().lower())
+        .limit(1)
+        .execute()
+    )
+    return {"status": "success", "available": not bool(resp.data)}
+
+
 # ── Helpers ───────────────────────────────────────────────────
 
 def _upload_sync(

@@ -169,5 +169,5 @@ def _parse_persentase(tipe: str, nilai: str) -> float:
     return 0.0
 
 
-# GET /api/public/check-email — DIHAPUS (REQ: user enumeration vulnerability)
-# Validasi duplikat email kini ditangani via 409 Conflict di POST /api/auth/register.
+# GET /api/public/check-email — dipindah ke /api/auth/check-email (auth router).
+# Endpoint ini hanya relevan untuk flow Register UMKM, bukan untuk publik umum.
