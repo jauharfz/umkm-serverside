@@ -1,8 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from app.deps import get_current_umkm
 from app.schemas import UpdateProfilRequest, GantiPasswordRequest
+from app.config import settings
 import app.database as db
 import logging
+import uuid
+import mimetypes
 
 router = APIRouter(prefix="/api", tags=["Profil & Pengaturan"])
 logger = logging.getLogger(__name__)
@@ -30,6 +33,7 @@ def _fmt_profile(u: dict) -> dict:
         "deskripsi": u.get("deskripsi"),
         "nomor_stand": u.get("nomor_stand"),
         "zona": u.get("zona"),
+        "qris_url": u.get("qris_url"),
         "status_pendaftaran": u["status_pendaftaran"],
         "stats": {
             "total_produk": total_produk,
@@ -59,6 +63,8 @@ async def update_profil(body: UpdateProfilRequest, umkm: dict = Depends(get_curr
         update_data["kategori"] = body.kategori.value
     if body.deskripsi is not None:
         update_data["deskripsi"] = body.deskripsi
+    if body.qris_url is not None:
+        update_data["qris_url"] = body.qris_url
 
     if not update_data:
         return {"status": "success", "message": "Tidak ada perubahan", "data": _fmt_profile(umkm)}
@@ -103,3 +109,46 @@ async def ganti_password(body: GantiPasswordRequest, umkm: dict = Depends(get_cu
         raise HTTPException(500, detail={"status": "error", "message": "Gagal mengubah password. Coba lagi."})
 
     return {"status": "success", "message": "Password berhasil diubah"}
+
+# ── POST /api/profil/qris-upload ─────────────────────────────
+# Upload foto QRIS statis ke Supabase Storage (bucket: poster-promo).
+# Frontend mengirim multipart/form-data dengan key "file".
+# Response: { status, qris_url }
+@router.post("/profil/qris-upload")
+async def upload_qris(
+    file: UploadFile = File(...),
+    umkm: dict = Depends(get_current_umkm),
+):
+    # Validasi tipe file
+    allowed_types = {"image/jpeg", "image/png", "image/webp", "image/gif"}
+    content_type = file.content_type or mimetypes.guess_type(file.filename or "")[0] or ""
+    if content_type not in allowed_types:
+        raise HTTPException(400, detail={"status": "error", "message": "Hanya file gambar (JPG/PNG/WEBP) yang diperbolehkan"})
+
+    # Ukuran max 2 MB
+    contents = await file.read()
+    if len(contents) > 2 * 1024 * 1024:
+        raise HTTPException(400, detail={"status": "error", "message": "Ukuran file maksimal 2 MB"})
+
+    ext = (file.filename or "qris.jpg").rsplit(".", 1)[-1].lower()
+    file_path = f"qris/{umkm['id']}/{uuid.uuid4()}.{ext}"
+
+    try:
+        bucket = settings.STORAGE_BUCKET_POSTER  # poster-promo (public)
+        db.supabase.storage.from_(bucket).upload(
+            file_path,
+            contents,
+            {"content-type": content_type, "upsert": "true"},
+        )
+        # Bangun URL publik
+        qris_url = f"{settings.SUPABASE_URL}/storage/v1/object/public/{bucket}/{file_path}"
+    except Exception as e:
+        logger.error(f"QRIS upload error: {e}")
+        raise HTTPException(500, detail={"status": "error", "message": "Gagal mengupload foto QRIS"})
+
+    # Simpan URL ke DB
+    resp = db.supabase.table("umkm").update({"qris_url": qris_url}).eq("id", umkm["id"]).execute()
+    if not resp.data:
+        raise HTTPException(500, detail={"status": "error", "message": "Upload berhasil tapi gagal menyimpan URL"})
+
+    return {"status": "success", "qris_url": qris_url}

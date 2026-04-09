@@ -109,6 +109,7 @@ class UpdateProfilRequest(BaseModel):
     alamat: Optional[str] = None
     kategori: Optional[KategoriUmkm] = None
     deskripsi: Optional[str] = None
+    qris_url: Optional[str] = None   # "" = hapus, URL = simpan baru
 
 
 class GantiPasswordRequest(BaseModel):
