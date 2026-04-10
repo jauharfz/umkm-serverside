@@ -1,27 +1,44 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException
 from typing import Optional
 from datetime import date
+from pydantic import BaseModel
 from app.deps import get_current_umkm
-from app.routers.auth import _upload_file
-from app.config import settings
 import app.database as db
 
 router = APIRouter(prefix="/api/promo", tags=["Promo & Diskon"])
 
-TIPE_VALID = {"Persentase", "Nominal", "BeliXGratisY", "GratisOngkir", "Lainnya"}
+TIPE_VALID   = {"Persentase", "Nominal", "BeliXGratisY", "GratisOngkir", "Lainnya"}
 STATUS_VALID = {"aktif", "nonaktif"}
 
 
+# ── Schemas ───────────────────────────────────────────────────
+class PromoBody(BaseModel):
+    nama:  str
+    tipe:  str
+    nilai: str
+    mulai: date
+    akhir: date
+
+
+class PromoUpdateBody(BaseModel):
+    nama:   Optional[str]  = None
+    tipe:   Optional[str]  = None
+    nilai:  Optional[str]  = None
+    mulai:  Optional[date] = None
+    akhir:  Optional[date] = None
+    status: Optional[str]  = None
+
+
+# ── Formatter ─────────────────────────────────────────────────
 def _fmt(p: dict) -> dict:
     return {
-        "id": p["id"],
-        "nama": p["nama"],
-        "tipe": p["tipe"],
-        "nilai": p["nilai"],
-        "mulai": p["mulai"],
-        "akhir": p["akhir"],
+        "id":     p["id"],
+        "nama":   p["nama"],
+        "tipe":   p["tipe"],
+        "nilai":  p["nilai"],
+        "mulai":  p["mulai"],
+        "akhir":  p["akhir"],
         "status": p["status"],
-        "poster_url": p.get("poster_url"),
     }
 
 
@@ -40,37 +57,19 @@ async def get_promo(umkm: dict = Depends(get_current_umkm)):
 
 # ── POST /api/promo ───────────────────────────────────────────
 @router.post("", status_code=201)
-async def tambah_promo(
-    nama: str = Form(...),
-    tipe: str = Form(...),
-    nilai: str = Form(...),
-    mulai: date = Form(...),
-    akhir: date = Form(...),
-    file_poster: Optional[UploadFile] = File(None),
-    umkm: dict = Depends(get_current_umkm),
-):
-    _validate_promo_fields(nama, tipe, nilai, mulai, akhir)
+async def tambah_promo(body: PromoBody, umkm: dict = Depends(get_current_umkm)):
+    _validate(body.nama, body.tipe, body.nilai, body.mulai, body.akhir)
 
-    poster_url = None
-    if file_poster and file_poster.filename:
-        poster_url = await _upload_file(
-            file_poster,
-            settings.STORAGE_BUCKET_POSTER,
-            f"{umkm['id']}/{file_poster.filename}",
-        )
-
-    payload = {
+    resp = db.supabase.table("promo").insert({
         "umkm_id": umkm["id"],
-        "nama": nama,
-        "tipe": tipe,
-        "nilai": nilai,
-        "mulai": mulai.isoformat(),
-        "akhir": akhir.isoformat(),
-        "status": "aktif",
-        "poster_url": poster_url,
-    }
+        "nama":    body.nama,
+        "tipe":    body.tipe,
+        "nilai":   body.nilai,
+        "mulai":   body.mulai.isoformat(),
+        "akhir":   body.akhir.isoformat(),
+        "status":  "aktif",
+    }).execute()
 
-    resp = db.supabase.table("promo").insert(payload).execute()
     if not resp.data:
         raise HTTPException(500, detail={"status": "error", "message": "Gagal menyimpan promo"})
 
@@ -79,48 +78,25 @@ async def tambah_promo(
 
 # ── PUT /api/promo/{id} ───────────────────────────────────────
 @router.put("/{promo_id}")
-async def update_promo(
-    promo_id: str,
-    nama: Optional[str] = Form(None),
-    tipe: Optional[str] = Form(None),
-    nilai: Optional[str] = Form(None),
-    mulai: Optional[date] = Form(None),
-    akhir: Optional[date] = Form(None),
-    status: Optional[str] = Form(None),
-    file_poster: Optional[UploadFile] = File(None),
-    umkm: dict = Depends(get_current_umkm),
-):
-    _get_promo_or_404(promo_id, umkm["id"])
+async def update_promo(promo_id: str, body: PromoUpdateBody, umkm: dict = Depends(get_current_umkm)):
+    _get_or_404(promo_id, umkm["id"])
 
     update_data = {}
-    if nama is not None:
-        update_data["nama"] = nama
-    if tipe is not None:
-        if tipe not in TIPE_VALID:
-            raise HTTPException(422, detail={"status": "error", "message": f"Tipe promo tidak valid: {tipe}"})
-        update_data["tipe"] = tipe
-    if nilai is not None:
-        update_data["nilai"] = nilai
-    if mulai is not None:
-        update_data["mulai"] = mulai.isoformat()
-    if akhir is not None:
-        update_data["akhir"] = akhir.isoformat()
-    if status is not None:
-        if status not in STATUS_VALID:
+    if body.nama   is not None: update_data["nama"]   = body.nama
+    if body.tipe   is not None:
+        if body.tipe not in TIPE_VALID:
+            raise HTTPException(422, detail={"status": "error", "message": f"Tipe promo tidak valid: {body.tipe}"})
+        update_data["tipe"] = body.tipe
+    if body.nilai  is not None: update_data["nilai"]  = body.nilai
+    if body.mulai  is not None: update_data["mulai"]  = body.mulai.isoformat()
+    if body.akhir  is not None: update_data["akhir"]  = body.akhir.isoformat()
+    if body.status is not None:
+        if body.status not in STATUS_VALID:
             raise HTTPException(422, detail={"status": "error", "message": "Status harus 'aktif' atau 'nonaktif'"})
-        update_data["status"] = status
-
-    if file_poster and file_poster.filename:
-        poster_url = await _upload_file(
-            file_poster,
-            settings.STORAGE_BUCKET_POSTER,
-            f"{umkm['id']}/{file_poster.filename}",
-        )
-        update_data["poster_url"] = poster_url
+        update_data["status"] = body.status
 
     if not update_data:
-        existing = _get_promo_or_404(promo_id, umkm["id"])
-        return {"status": "success", "message": "Tidak ada perubahan", "data": _fmt(existing)}
+        return {"status": "success", "message": "Tidak ada perubahan", "data": _fmt(_get_or_404(promo_id, umkm["id"]))}
 
     resp = (
         db.supabase.table("promo")
@@ -138,14 +114,13 @@ async def update_promo(
 # ── DELETE /api/promo/{id} ────────────────────────────────────
 @router.delete("/{promo_id}")
 async def hapus_promo(promo_id: str, umkm: dict = Depends(get_current_umkm)):
-    _get_promo_or_404(promo_id, umkm["id"])
+    _get_or_404(promo_id, umkm["id"])
     db.supabase.table("promo").delete().eq("id", promo_id).eq("umkm_id", umkm["id"]).execute()
     return {"status": "success", "message": "Promo berhasil dihapus"}
 
 
 # ── Helpers ───────────────────────────────────────────────────
-
-def _get_promo_or_404(promo_id: str, umkm_id: str) -> dict:
+def _get_or_404(promo_id: str, umkm_id: str) -> dict:
     resp = (
         db.supabase.table("promo")
         .select("*")
@@ -159,7 +134,7 @@ def _get_promo_or_404(promo_id: str, umkm_id: str) -> dict:
     return resp.data[0]
 
 
-def _validate_promo_fields(nama, tipe, nilai, mulai, akhir):
+def _validate(nama, tipe, nilai, mulai, akhir):
     if not nama or not tipe or not nilai:
         raise HTTPException(422, detail={"status": "error", "message": "Field nama, tipe, nilai, mulai, dan akhir wajib diisi"})
     if tipe not in TIPE_VALID:

@@ -20,6 +20,7 @@ def _umkm_to_profile(u: dict) -> dict:
         "deskripsi": u.get("deskripsi"),
         "nomor_stand": u.get("nomor_stand"),
         "zona": u.get("zona"),
+        "qris_url": u.get("qris_url"),       # ← wajib ada agar Kasir.jsx bisa tampilkan QRIS
         "status_pendaftaran": u["status_pendaftaran"],
         "created_at": u["created_at"],
     }
